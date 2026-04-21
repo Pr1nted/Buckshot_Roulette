@@ -3,13 +3,13 @@
 #include "gameplay.h"
 #include "screens.h"
 
-// --- Helper for game loop delay ---
+// Helper for game loop delay
 void refresh_dealer_view(GameState *gs, WINDOW *gwin) {
     draw_main_ui(gwin, gs);
     napms(1000);
 }
 
-// --- Specific Menu Screens ---
+// Specific Menu Screens
 
 void create_settings(void) {
     const char *title_str = "Settings";

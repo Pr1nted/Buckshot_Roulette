@@ -11,7 +11,7 @@
 #define MAX_LOG   32
 #define MAX_SHELLS 8
 
-// --- Enums ---
+// Enums
 
 typedef enum {
     ITEM_NONE,
@@ -32,7 +32,7 @@ typedef enum {
     SHELL_BLANK
 } ShellType;
 
-// --- Structs ---
+// Structs
 
 typedef struct {
     char name[32];
@@ -85,7 +85,7 @@ typedef struct {
     int n_desc_lines;
 } Loadout;
 
-// --- Global Variables ---
+// Global Variables
 
 extern int active_loadout;
 extern int g_flashes_enabled;

@@ -2,7 +2,7 @@
 #include "ui.h"
 #include "screens.h"
 
-// --- Global Definitions ---
+// Global Definitions
 int active_loadout = 0;
 int g_flashes_enabled = 0;
 
@@ -14,7 +14,7 @@ const char *loadout_names[] = {
 
 WINDOW *border_win;
 
-// --- Init Helpers ---
+// Init Helpers
 
 void init_colors(void) {
     start_color();
@@ -30,7 +30,7 @@ void init_colors(void) {
     wbkgd(border_win, COLOR_PAIR(0));
 }
 
-// --- Main Entry Point ---
+// Main Entry Point
 
 int main(void) {
     srand(time(NULL));
@@ -66,6 +66,7 @@ int main(void) {
     while (1) {
         int choice = create_menu(main_menu);
 
+        // Not switch case because it is inside a loop
         if (choice == 0) {
             create_start_game_menu();
         } else if (choice == 1) {

@@ -144,6 +144,9 @@ void fire_shotgun(GameState *gs, int target_is_dealer, WINDOW *gwin) {
         generate_shells(gs);
         give_new_items(gs);
 
+        // Force turn to player so the dealer doesn't shoot while showing shells
+        gs->player_turn = 1;
+
         gs->show_shells = 1;
         gs->shell_reveal_time = time(NULL);
     }
@@ -310,6 +313,9 @@ void use_item(GameState *gs, int item_idx) {
         game_log(gs, "Gun empty. Reloading...");
         generate_shells(gs);
         give_new_items(gs);
+
+        gs->player_turn = 1;
+
         gs->show_shells = 1;
         gs->shell_reveal_time = time(NULL);
     }
@@ -320,9 +326,6 @@ void dealer_ai_turn(GameState *gs, WINDOW *gwin) {
     int known_shell = SHELL_UNKNOWN;
 
     game_log(gs, "Dealer is thinking...");
-    // In a real async setup, we would use a timer or thread.
-    // For this structure, we rely on render_game calling napms
-    // refresh_dealer_view(gs, gwin);
 
     while (!decided_to_shoot && gs->dealer.charges > 0 && gs->player.charges > 0) {
         int item_to_use = -1;
