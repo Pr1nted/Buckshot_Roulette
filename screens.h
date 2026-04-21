@@ -13,5 +13,6 @@ void draw_main_ui(WINDOW *gwin, GameState *gs);
 int render_game(GameState *gs);
 int show_death_screen(void);
 int show_win_screen(int *current_money, int cigs, int shells, int damage, int beer);
+void show_placeholder(void);
 
 #endif

@@ -385,6 +385,305 @@ void create_credits(void) {
     clear();
     refresh();
 }
+// LAN Host Menu
+void create_lan_host_menu(void) {
+    const char *title_str = "Host LAN Game";
+    int title_h = 3;
+    int title_w = 20;
+
+    // State variables
+    int selected_rounds = 3;
+    int temp_loadout = active_loadout;
+    int is_host_only = 0; // 0 = Play, 1 = Host Only
+
+    char username_buffer[32] = "Host";
+    int user_len = strlen(username_buffer);
+
+    // Dynamic strings
+    char rounds_opt[32];
+    char loadout_opt[64];
+    char mode_opt[32];
+    char name_opt[64]; // Larger for "Name: [LongName]"
+
+    // Options array
+    const char *options[] = {
+        rounds_opt,
+        loadout_opt,
+        mode_opt,
+        name_opt,
+        "Start Hosting",
+        "Back"
+    };
+    int n_options = sizeof(options) / sizeof(options[0]);
+
+    // Window dimensions (6 options + 1 hint + borders)
+    int list_w = 35;
+    int list_h = 9;
+
+    int title_x = (COLS - title_w) / 2;
+    int title_y = (LINES / 2) - (title_h + list_h) / 2;
+    int list_x  = (COLS - list_w) / 2;
+    int list_y  = title_y + title_h + 1;
+
+    WINDOW *title_win = newwin(title_h, title_w, title_y, title_x);
+    WINDOW *list_win  = newwin(list_h,  list_w,  list_y,  list_x);
+
+    int selected = 0;
+    int ch;
+
+    while (1) {
+        draw_border();
+
+        // Update strings
+        snprintf(rounds_opt, sizeof(rounds_opt), "Rounds: %d", selected_rounds);
+        snprintf(loadout_opt, sizeof(loadout_opt), "Loadout: %s", loadout_names[temp_loadout]);
+        snprintf(mode_opt, sizeof(mode_opt), "Mode: %s", is_host_only ? "Host Only" : "Play");
+        snprintf(name_opt, sizeof(name_opt), "Name: %s", username_buffer);
+
+        // Draw Title
+        werase(title_win);
+        box(title_win, 0, 0);
+        wattron(title_win, A_BOLD | A_UNDERLINE);
+        mvwprintw(title_win, 1, (title_w - strlen(title_str)) / 2, "%s", title_str);
+        wattroff(title_win, A_BOLD | A_UNDERLINE);
+        wrefresh(title_win);
+
+        // Draw List
+        werase(list_win);
+        box(list_win, 0, 0);
+
+        int current_row = 1;
+
+        for (int i = 0; i < n_options; i++) {
+            int x = (list_w - strlen(options[i])) / 2;
+
+            // Dim text if Name is disabled (Host Only)
+            int dim_name = (i == 3 && is_host_only);
+
+            if (i == selected) {
+                if (dim_name) wattron(list_win, A_DIM | A_REVERSE);
+                else wattron(list_win, A_REVERSE);
+            } else if (dim_name) {
+                wattron(list_win, A_DIM);
+            }
+
+            // Add arrows for adjustable options
+            if ((i == 0 || i == 1 || i == 2) && i == selected) {
+                mvwprintw(list_win, current_row, x - 2, "<");
+                mvwprintw(list_win, current_row, x, "%s", options[i]);
+                mvwprintw(list_win, current_row, x + strlen(options[i]) + 1, ">");
+            } else {
+                mvwprintw(list_win, current_row, x, "%s", options[i]);
+            }
+
+            wattroff(list_win, A_REVERSE);
+            wattroff(list_win, A_DIM);
+            current_row++;
+
+            // Hints
+            if (i == 0 && i == selected) {
+                mvwprintw(list_win, current_row, (list_w - 18)/2, "<- Rounds Change ->");
+                current_row++;
+            }
+            if (i == 1 && i == selected) {
+                mvwprintw(list_win, current_row, (list_w - 22)/2, "<- Loadout Change ->");
+                current_row++;
+            }
+            if (i == 2 && i == selected) {
+                mvwprintw(list_win, current_row, (list_w - 18)/2, "<- Mode Switch ->");
+                current_row++;
+            }
+            if (i == 3 && i == selected && !is_host_only) {
+                mvwprintw(list_win, current_row, (list_w - 20)/2, "(Type Username)");
+                current_row++;
+            }
+        }
+        wrefresh(list_win);
+
+        ch = getch();
+        switch (ch) {
+            case KEY_UP:
+                selected = (selected - 1 + n_options) % n_options;
+                break;
+            case KEY_DOWN:
+                selected = (selected + 1) % n_options;
+                break;
+
+            case KEY_LEFT:
+                if (selected == 0) { // Rounds
+                    selected_rounds--;
+                    if (selected_rounds < 1) selected_rounds = 1;
+                } else if (selected == 1) { // Loadout
+                    temp_loadout--;
+                    if (temp_loadout < 0) temp_loadout = 2;
+                    active_loadout = temp_loadout;
+                } else if (selected == 2) { // Mode
+                    is_host_only = !is_host_only;
+                }
+                break;
+
+            case KEY_RIGHT:
+                if (selected == 0) { // Rounds
+                    selected_rounds++;
+                    if (selected_rounds > 10) selected_rounds = 10;
+                } else if (selected == 1) { // Loadout
+                    temp_loadout++;
+                    if (temp_loadout > 2) temp_loadout = 0;
+                    active_loadout = temp_loadout;
+                } else if (selected == 2) { // Mode
+                    is_host_only = !is_host_only;
+                }
+                break;
+
+            case 10: // Enter
+                if (selected == 4) { // Start
+                    // Placeholder: start_server(selected_rounds, active_loadout, is_host_only, username_buffer);
+                    show_placeholder();
+                } else if (selected == 5) { // Back
+                    goto done;
+                }
+                break;
+        }
+
+        // Username Typing (Only if Play mode)
+        if (selected == 3 && !is_host_only) {
+            if (ch == KEY_BACKSPACE || ch == 127) {
+                if (user_len > 0) {
+                    username_buffer[--user_len] = '\0';
+                }
+            } else if (ch >= ' ' && ch <= '~') {
+                if (user_len < 31) {
+                    username_buffer[user_len++] = ch;
+                    username_buffer[user_len] = '\0';
+                }
+            }
+        }
+    }
+
+done:
+    delwin(title_win);
+    delwin(list_win);
+    clear();
+    refresh();
+}
+
+// LAN Join Menu
+void create_lan_join_menu(void) {
+    const char *title_str = "Join LAN Game";
+    int title_h = 3;
+    int title_w = 20;
+
+    // Buffers
+    char ip_buffer[46] = "127.0.0.1";
+    int ip_len = strlen(ip_buffer);
+
+    char username_buffer[32] = "Player";
+    int user_len = strlen(username_buffer);
+
+    char connect_btn[64];
+    char name_btn[64];
+
+    const char *options[] = {
+        connect_btn,
+        name_btn,
+        "Back"
+    };
+    int n_options = sizeof(options) / sizeof(options[0]);
+
+    // Window dimensions (3 options + 2 hints + borders)
+    int list_w = 35;
+    int list_h = 7;
+
+    int title_x = (COLS - title_w) / 2;
+    int title_y = (LINES / 2) - (title_h + list_h) / 2;
+    int list_x  = (COLS - list_w) / 2;
+    int list_y  = title_y + title_h + 1;
+
+    WINDOW *title_win = newwin(title_h, title_w, title_y, title_x);
+    WINDOW *list_win  = newwin(list_h,  list_w,  list_y,  list_x);
+
+    int selected = 0;
+    int ch;
+
+    while (1) {
+        draw_border();
+
+        // Update button strings
+        snprintf(connect_btn, sizeof(connect_btn), "Connect: %s", ip_buffer);
+        snprintf(name_btn, sizeof(name_btn), "Name: %s", username_buffer);
+
+        // Draw Title
+        werase(title_win);
+        box(title_win, 0, 0);
+        wattron(title_win, A_BOLD | A_UNDERLINE);
+        mvwprintw(title_win, 1, (title_w - strlen(title_str)) / 2, "%s", title_str);
+        wattroff(title_win, A_BOLD | A_UNDERLINE);
+        wrefresh(title_win);
+
+        // Draw List
+        werase(list_win);
+        box(list_win, 0, 0);
+
+        int current_row = 1;
+
+        for (int i = 0; i < n_options; i++) {
+            int x = (list_w - strlen(options[i])) / 2;
+            if (i == selected) wattron(list_win, A_REVERSE);
+            mvwprintw(list_win, current_row, x, "%s", options[i]);
+            if (i == selected) wattroff(list_win, A_REVERSE);
+            current_row++;
+
+            // Hints
+            if (i == 0 && i == selected) {
+                mvwprintw(list_win, current_row, (list_w - 20)/2, "(Type to edit IP)");
+                current_row++;
+            }
+            if (i == 1 && i == selected) {
+                mvwprintw(list_win, current_row, (list_w - 20)/2, "(Type Username)");
+                current_row++;
+            }
+        }
+        wrefresh(list_win);
+
+        ch = getch();
+
+        // Navigation
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            selected = (selected + 1) % n_options;
+        }
+        else if (ch == 10) { // Enter
+            if (selected == 0) {
+                // Placeholder: connect_to_server(ip_buffer, username_buffer);
+                show_placeholder();
+            } else if (selected == 2) {
+                goto done;
+            }
+        }
+        // Typing Logic
+        else if (selected == 0) { // IP
+            if (ch == KEY_BACKSPACE || ch == 127) {
+                if (ip_len > 0) ip_buffer[--ip_len] = '\0';
+            } else if (ch >= ' ' && ch <= '~') {
+                if ((ch >= '0' && ch <= '9') || ch == '.') {
+                    if (ip_len < 45) { ip_buffer[ip_len++] = ch; ip_buffer[ip_len] = '\0'; }
+                }
+            }
+        }
+        else if (selected == 1) { // Username
+            if (ch == KEY_BACKSPACE || ch == 127) {
+                if (user_len > 0) username_buffer[--user_len] = '\0';
+            } else if (ch >= ' ' && ch <= '~') {
+                if (user_len < 31) { username_buffer[user_len++] = ch; username_buffer[user_len] = '\0'; }
+            }
+        }
+    }
+
+done:
+    delwin(title_win);
+    delwin(list_win);
+    clear();
+    refresh();
+}
 
 void create_lan_menu(void) {
     char title_line[128];
@@ -393,8 +692,8 @@ void create_lan_menu(void) {
 
     const char *title_lines[] = { title_line };
     const char *options[] = {
-        "Host LAN game",
-        "Join LAN game",
+        "Host game",
+        "Join game",
         "Back"
     };
 
@@ -409,16 +708,16 @@ void create_lan_menu(void) {
         int choice = create_menu(m);
 
         if (choice == 0) {
-            // Host LAN game
+            create_lan_host_menu(); // Call Host Menu
         } else if (choice == 1) {
-            // Join LAN game
+            create_lan_join_menu(); // Call Join Menu
         } else if (choice == 2) {
             break; // Back
         }
     }
 }
 
-// --- Game Screens ---
+// Game Screens
 
 int show_death_screen(void) {
     int height = 8;
@@ -919,4 +1218,33 @@ void create_start_game_menu(void) {
             break;
         }
     }
+}
+
+void show_placeholder(void) {
+    int h = 7;
+    int w = 30;
+    int start_y = (LINES - h) / 2;
+    int start_x = (COLS - w) / 2;
+
+    WINDOW *win = newwin(h, w, start_y, start_x);
+    keypad(win, TRUE);
+    nodelay(win, FALSE); // Wait for input
+
+    while(1) {
+        werase(win);
+        box(win, 0, 0);
+
+        wattron(win, A_BOLD | COLOR_PAIR(1)); // Use Red color (Pair 1)
+        mvwprintw(win, 2, (w - 22)/2, "Feature not implemented");
+        wattroff(win, A_BOLD | COLOR_PAIR(1));
+
+        mvwprintw(win, 4, (w - 21)/2, "Press Enter to close");
+
+        wrefresh(win);
+
+        int ch = wgetch(win);
+        if (ch == 10) break; // Enter key
+    }
+
+    delwin(win);
 }
