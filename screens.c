@@ -1,4 +1,7 @@
-#include "game.h"
+#include "types.h"
+#include "ui.h"
+#include "gameplay.h"
+#include "screens.h"
 
 // --- Helper for game loop delay ---
 void refresh_dealer_view(GameState *gs, WINDOW *gwin) {

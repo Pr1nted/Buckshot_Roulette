@@ -1,4 +1,5 @@
-#include "game.h"
+#include "types.h"
+#include "ui.h"
 
 // Global buffer for text wrapping
 static char wrap_buf[3][512][256];

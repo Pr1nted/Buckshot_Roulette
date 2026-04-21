@@ -1,5 +1,5 @@
-#ifndef GAME_H
-#define GAME_H
+#ifndef TYPES_H
+#define TYPES_H
 
 #include <ncurses.h>
 #include <string.h>
@@ -11,7 +11,7 @@
 #define MAX_LOG   32
 #define MAX_SHELLS 8
 
-// --- Enums & Structs ---
+// --- Enums ---
 
 typedef enum {
     ITEM_NONE,
@@ -31,6 +31,8 @@ typedef enum {
     SHELL_LIVE,
     SHELL_BLANK
 } ShellType;
+
+// --- Structs ---
 
 typedef struct {
     char name[32];
@@ -83,48 +85,11 @@ typedef struct {
     int n_desc_lines;
 } Loadout;
 
-// --- Global Variables (extern) ---
+// --- Global Variables ---
 
 extern int active_loadout;
 extern int g_flashes_enabled;
 extern const char *loadout_names[];
 extern WINDOW *border_win;
-
-// --- Function Prototypes ---
-
-// main.c
-void init_colors(void);
-
-// ui.c
-void draw_border(void);
-int wrap_text_into(int slot, const char *lines[], int n_lines, int max_w,
-                   const char *out[], int max_out);
-int create_menu(Menu m);
-void draw_items(WINDOW *win, int row, int col, ItemType items[], int selected_action, int highlight);
-void draw_charges(WINDOW *win, int row, int col, int charges, int max_charges);
-const char *item_name(ItemType item);
-void trigger_flash(WINDOW *gwin);
-
-// gameplay.c
-int RangeRand(int min, int max);
-void game_log(GameState *gs, const char *msg);
-void init_game(GameState *gs);
-void start_next_round(GameState *gs);
-void generate_shells(GameState *gs);
-void give_new_items(GameState *gs);
-void fire_shotgun(GameState *gs, int target_is_dealer, WINDOW *gwin);
-void use_item(GameState *gs, int item_idx);
-void dealer_ai_turn(GameState *gs, WINDOW *gwin);
-
-// screens.c
-void create_settings(void);
-void create_loadouts(void);
-void create_credits(void);
-void create_lan_menu(void);
-void create_start_game_menu(void);
-void draw_main_ui(WINDOW *gwin, GameState *gs);
-int render_game(GameState *gs);
-int show_death_screen(void);
-int show_win_screen(int *current_money, int cigs, int shells, int damage, int beer);
 
 #endif

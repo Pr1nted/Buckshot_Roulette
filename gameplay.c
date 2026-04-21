@@ -1,4 +1,6 @@
-#include "game.h"
+#include "types.h"
+#include "ui.h"
+#include "gameplay.h"
 
 int RangeRand(int min, int max) {
     return rand() % (max - min + 1) + min;

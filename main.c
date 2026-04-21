@@ -1,4 +1,6 @@
-#include "game.h"
+#include "types.h"
+#include "ui.h"
+#include "screens.h"
 
 // --- Global Definitions ---
 int active_loadout = 0;
