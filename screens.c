@@ -895,7 +895,7 @@ void create_start_game_menu(void) {
                             }
                         }
                         else if (gs.dealer.charges <= 0) {
-                            if (gs.round >= gs.roundAmount) {
+                            if (gs.round > gs.roundAmount) {
                                 int win_choice = show_win_screen(&current_money, gs.cigarettes_smoked, gs.shells_ejected, gs.damage_dealt, gs.beer_ml);
 
                                 if (win_choice == 0) {
