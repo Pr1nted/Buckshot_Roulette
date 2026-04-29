@@ -3,3 +3,10 @@
 
 # CMake
 cmake-build-*/
+
+# Build
+build*/
+Buckshot_Roulette.AppDir
+combined_output.txt
+
+.DS_Store

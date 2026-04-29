@@ -1,5 +1,4 @@
 #include "types.h"
-#include "ui.h"
 
 // Global buffer for text wrapping
 static char wrap_buf[3][512][256];
@@ -145,7 +144,14 @@ const char *item_name(ItemType item) {
 }
 
 void draw_charges(WINDOW *win, int row, int col, int charges, int max_charges) {
-    mvwprintw(win, row, col, "(%d/%d)", charges, max_charges);
+    // --- Display [DEAD] if charges fall to 0 or below ---
+    if (charges <= 0) {
+        wattron(win, COLOR_PAIR(1) | A_BOLD);
+        mvwprintw(win, row, col, "[DEAD]");
+        wattroff(win, COLOR_PAIR(1) | A_BOLD);
+    } else {
+        mvwprintw(win, row, col, "(%d/%d)", charges, max_charges);
+    }
 }
 
 void draw_items(WINDOW *win, int row, int col, ItemType items[], int selected_action, int highlight) {
@@ -167,13 +173,10 @@ void trigger_flash(WINDOW *gwin) {
 
     chtype old_bkgd = getbkgd(gwin);
 
-    // Set White Background
     wbkgd(gwin, COLOR_PAIR(7));
     wrefresh(gwin);
 
-    // Wait for 0.5 seconds
     napms(500);
 
-    // Restore background
     wbkgd(gwin, old_bkgd);
 }

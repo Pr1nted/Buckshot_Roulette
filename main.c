@@ -1,10 +1,12 @@
 #include "types.h"
 #include "ui.h"
 #include "screens.h"
+#include <locale.h>
 
-// Global Definitions
+// --- Global Definitions ---
 int active_loadout = 0;
 int g_flashes_enabled = 0;
+int g_debug_mode = 0;
 
 const char *loadout_names[] = {
     "Classic",
@@ -14,7 +16,7 @@ const char *loadout_names[] = {
 
 WINDOW *border_win;
 
-// Init Helpers
+// --- Init Helpers ---
 
 void init_colors(void) {
     start_color();
@@ -23,18 +25,25 @@ void init_colors(void) {
     init_pair(2, COLOR_YELLOW, COLOR_BLACK);
     init_pair(3, COLOR_GREEN, COLOR_BLACK);
     init_pair(4, COLOR_BLUE, COLOR_BLACK);
-    init_pair(7, COLOR_BLACK, COLOR_WHITE); // FLASH PAIR
+    init_pair(7, COLOR_BLACK, COLOR_WHITE);
 
     // Apply background to entire stdscr
     wbkgd(stdscr, COLOR_PAIR(0));
     wbkgd(border_win, COLOR_PAIR(0));
 }
 
-// Main Entry Point
+// --- Main Entry Point ---
 
 int main(void) {
+    setlocale(LC_ALL, "");
     srand(time(NULL));
     initscr();
+
+    // --- DEBUG: CHECK STRUCT SIZES ---
+    /*printf("DEBUG: ActionPacket size is %zu (Expecting 17)\n", sizeof(ActionPacket));
+    printf("DEBUG: SyncPacket size is %zu\n", sizeof(SyncPacket));
+    fflush(stdout);*/
+
     init_colors();
 
     clear();
@@ -43,10 +52,8 @@ int main(void) {
     cbreak();
     keypad(stdscr, TRUE);
 
-    // Create border
     border_win = newwin(LINES, COLS, 0, 0);
 
-    // Needed to display the menu without first input
     wrefresh(stdscr);
 
     const char *main_title[] = {
@@ -66,7 +73,6 @@ int main(void) {
     while (1) {
         int choice = create_menu(main_menu);
 
-        // Not switch case because it is inside a loop
         if (choice == 0) {
             create_start_game_menu();
         } else if (choice == 1) {

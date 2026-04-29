@@ -1,0 +1,29 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc-12 \
+    g++-12 \
+    cmake \
+    libncurses-dev \
+    wget \
+    file \
+    squashfs-tools \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 \
+ && update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-12 100
+
+# Download the AppImage runtime (a tiny static binary, not an AppImage itself)
+# This is used as the ELF header of the final .AppImage file
+# We use $(uname -m) to fetch the correct architecture (x86_64 or aarch64)
+RUN wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/runtime-$(uname -m)" \
+        -O /opt/appimage-runtime \
+    && chmod +x /opt/appimage-runtime
+
+WORKDIR /src
+
+CMD ["/src/docker_inner_build.sh"]

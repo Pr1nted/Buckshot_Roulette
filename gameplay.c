@@ -1,12 +1,26 @@
-#include "types.h"
-#include "ui.h"
 #include "gameplay.h"
+#include "ui.h"
+
+void advance_turn(GameState *gs) {
+    int start_index = gs->current_player_index;
+
+    gs->current_player_index = (gs->current_player_index + 1) % gs->player_count;
+
+    while (gs->players[gs->current_player_index].charges <= 0) {
+        if (gs->current_player_index == start_index) break;
+        gs->current_player_index = (gs->current_player_index + 1) % gs->player_count;
+    }
+
+    gs->saw_active = 0;
+}
 
 int RangeRand(int min, int max) {
     return rand() % (max - min + 1) + min;
 }
 
 void game_log(GameState *gs, const char *msg) {
+    if (!gs->is_host && strncmp(msg, "[PRIVATE] ", 10) == 0) msg += 10;
+
     if (gs->n_log < MAX_LOG) {
         strncpy(gs->log[gs->n_log++], msg, 63);
     } else {
@@ -64,104 +78,146 @@ void give_new_items(GameState *gs) {
     ItemType *pool = (active_loadout == 1) ? double_pool : classic_pool;
     int pool_size = (active_loadout == 1) ? 9 : 5;
 
-    Player *players[2] = {&gs->player, &gs->dealer};
-
-    for (int p = 0; p < 2; p++) {
+    for (int p = 0; p < gs->player_count; p++) {
+        Player *current_p = &gs->players[p];
         int added_this_round = 0;
+
         for (int i = 0; i < n_to_add; i++) {
             for (int slot = 0; slot < MAX_ITEMS; slot++) {
-                if (players[p]->items[slot] == ITEM_NONE) {
-                    players[p]->items[slot] = pool[RangeRand(0, pool_size - 1)];
+                if (current_p->items[slot] == ITEM_NONE) {
+                    current_p->items[slot] = pool[RangeRand(0, pool_size - 1)];
                     added_this_round++;
                     break;
                 }
             }
         }
     }
-    game_log(gs, "New items dealt to both sides.");
+    game_log(gs, "New items dealt to all players.");
 }
 
-void fire_shotgun(GameState *gs, int target_is_dealer, WINDOW *gwin) {
+
+void perform_multiplayer_shoot(GameState *gs, int shooter_idx, int target_idx, WINDOW *gwin) {
     ShellType current = gs->shells[gs->current_shell];
     int damage = gs->saw_active ? 2 : 1;
-    int shooter_was_player = gs->player_turn;
+    const char *shooter_name = gs->players[shooter_idx].name;
+    const char *target_name = gs->players[target_idx].name;
 
-    if (shooter_was_player) {
-        if (target_is_dealer) game_log(gs, "You aim at the DEALER...");
-        else game_log(gs, "You aim at YOURSELF...");
+    char msg[128];
+    if (shooter_idx == target_idx) {
+        snprintf(msg, 128, "%s shoots THEMSELVES", shooter_name);
     } else {
-        if (target_is_dealer) game_log(gs, "Dealer aims at HIMSELF...");
-        else game_log(gs, "Dealer aims at YOU...");
+        snprintf(msg, 128, "%s aims at %s...", shooter_name, target_name);
     }
+    game_log(gs, msg);
 
-    int should_swap_turn = 1;
-
+    int turn_swaps = 1;
     if (current == SHELL_LIVE) {
-        game_log(gs, "BANG! It was LIVE.");
-        if (target_is_dealer) {
-            gs->dealer.charges -= damage;
-            gs->damage_dealt += damage;
-            gs->money += (2000 * damage); // Bonus money for damage
-        } else {
-            gs->player.charges -= damage;
-            // FLASH EFFECT
-            trigger_flash(gwin);
-        }
-
-        gs->live_count--;
-        should_swap_turn = 1; // Live rounds always result in a turn swap
-    }
-    else {
-        game_log(gs, "click... It was a BLANK.");
-        gs->blank_count--;
-
-        int shot_self = (shooter_was_player && !target_is_dealer) || (!shooter_was_player && target_is_dealer);
-
-        if (shot_self) {
-            game_log(gs, shooter_was_player ? "Extra turn granted!" : "Dealer keeps his turn!");
-            should_swap_turn = 0;
-        } else {
-            should_swap_turn = 1;
-        }
-    }
-
-    if (should_swap_turn) {
-        if (gs->cuffs_active) {
-            game_log(gs, "Handcuffs active! Turn skipped.");
-            gs->cuffs_active = 0;
-        } else {
-            gs->player_turn = !gs->player_turn;
-        }
+        gs->players[target_idx].charges -= damage;
+        game_log(gs, "BOOM! Live round.");
+        if (gs->players[target_idx].charges < 0) gs->players[target_idx].charges = 0;
+        if (gwin) trigger_flash(gwin);
+    } else {
+        game_log(gs, "Click. It was a blank.");
+        if (shooter_idx == target_idx) turn_swaps = 0;
     }
 
     gs->current_shell++;
     gs->saw_active = 0;
 
-    if (gs->player.charges <= 0 || gs->dealer.charges <= 0) {
-        game_log(gs, "MATCH OVER.");
-    } else if (gs->current_shell >= gs->n_shells) {
-        game_log(gs, "Gun empty. Reloading...");
-        generate_shells(gs);
-        give_new_items(gs);
+    if (turn_swaps) {
+        if (gs->cuffs_target >= 0) {
+            int next = (gs->current_player_index + 1) % gs->player_count;
+            if (next == gs->cuffs_target) {
+                game_log(gs, "Target is handcuffed! Turn skipped.");
+                gs->current_player_index = next;
+            }
+            gs->cuffs_target = -1;
+        }
 
-        // Force turn to player so the dealer doesn't shoot while showing shells
-        gs->player_turn = 1;
+        gs->current_player_index = (gs->current_player_index + 1) % gs->player_count;
 
-        gs->show_shells = 1;
-        gs->shell_reveal_time = time(NULL);
+        // SKIP DEAD PLAYERS
+        int safety_count = 0;
+        while (gs->players[gs->current_player_index].charges <= 0 && safety_count < gs->player_count) {
+            gs->current_player_index = (gs->current_player_index + 1) % gs->player_count;
+            safety_count++;
+        }
     }
 }
 
-void use_item(GameState *gs, int item_idx) {
-    Player *current_p = gs->player_turn ? &gs->player : &gs->dealer;
-    Player *other_p   = gs->player_turn ? &gs->dealer : &gs->player;
+void perform_steal(GameState *gs, int actor_idx, int target_idx, int steal_slot) {
+    Player *current_p = &gs->players[actor_idx];
+    Player *victim_p = &gs->players[target_idx];
+
+    if (steal_slot >= 0 && steal_slot < MAX_ITEMS) {
+        ItemType stolen_item = victim_p->items[steal_slot];
+
+        if (stolen_item != ITEM_NONE && stolen_item != ITEM_ADRENALINE) {
+            // Remove from victim
+            for (int i = steal_slot; i < MAX_ITEMS - 1; i++)
+                victim_p->items[i] = victim_p->items[i + 1];
+            victim_p->items[MAX_ITEMS - 1] = ITEM_NONE;
+
+            int found_slot = -1;
+            for (int i = 0; i < MAX_ITEMS; i++) {
+                if (current_p->items[i] == ITEM_NONE) {
+                    found_slot = i;
+                    break;
+                }
+            }
+
+            if (found_slot != -1) {
+                current_p->items[found_slot] = stolen_item;
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%s stole %s!",
+                         current_p->name, item_name(stolen_item));
+                game_log(gs, msg);
+            } else {
+                game_log(gs, "Inventory full!");
+            }
+        } else {
+            game_log(gs, "Nothing stealable there.");
+        }
+    }
+
+    for (int i = 0; i < MAX_ITEMS; i++) {
+        if (current_p->items[i] == ITEM_ADRENALINE) {
+            for (int j = i; j < MAX_ITEMS - 1; j++)
+                current_p->items[j] = current_p->items[j + 1];
+            current_p->items[MAX_ITEMS - 1] = ITEM_NONE;
+            break;
+        }
+    }
+
+    gs->adrenaline_active = 0;
+    gs->selected_item = 0;
+}
+
+void use_item(GameState *gs, int item_idx, int actor_idx, int target_idx) {
+    int other_idx = -1;
+    for(int i=0; i<gs->player_count; i++) {
+        if(i != actor_idx) {
+            other_idx = i;
+            break;
+        }
+    }
+    if (other_idx == -1) other_idx = 0;
+
+    Player *current_p = &gs->players[actor_idx];
+
+    Player *other_p   = &gs->players[other_idx];
     ItemType item = current_p->items[item_idx];
 
     if (item == ITEM_NONE) return;
 
-    char msg[64];
-    snprintf(msg, sizeof(msg), "%s uses %s.", gs->player_turn ? "You" : "Dealer", item_name(item));
-    game_log(gs, msg);
+    char msg[128];
+
+    int should_log = (gs->is_host || gs->player_count <= 1);
+
+    if (should_log) {
+        snprintf(msg, sizeof(msg), "%s uses %s.", gs->players[actor_idx].name, item_name(item));
+        game_log(gs, msg);
+    }
 
     switch (item) {
         case ITEM_BEER:
@@ -171,8 +227,8 @@ void use_item(GameState *gs, int item_idx) {
                 if (ejected == SHELL_LIVE) gs->live_count--;
                 else gs->blank_count--;
                 gs->current_shell++;
-                gs->shells_ejected++; // Track stats
-                gs->beer_ml += 330; // Track Beer
+                gs->shells_ejected++;
+                gs->beer_ml += 330;
             }
             break;
 
@@ -180,7 +236,7 @@ void use_item(GameState *gs, int item_idx) {
             if (current_p->charges < current_p->max_charges) {
                 current_p->charges++;
                 game_log(gs, "Gained 1 charge.");
-                gs->cigarettes_smoked++; // Track cigarettes
+                gs->cigarettes_smoked++;
             } else {
                 game_log(gs, "Already at max charges!");
             }
@@ -193,24 +249,39 @@ void use_item(GameState *gs, int item_idx) {
             }
             break;
 
-        case ITEM_HANDCUFFS:
-            if (!gs->cuffs_active) {
-                gs->cuffs_active = 1;
-                game_log(gs, "Opponent cuffed! They skip a turn.");
-            }
+        case ITEM_HANDCUFFS: {
+                // Use the explicit target_idx passed in (from ActionPacket.target_idx).
+                // Fall back to next player only if caller passed -1.
+                int cuff_target = target_idx;
+                if (cuff_target < 0 || cuff_target >= gs->player_count) {
+                    if (gs->player_count == 2) {
+                        cuff_target = gs->player_turn ? 1 : 0;
+                    } else {
+                        cuff_target = (gs->current_player_index + 1) % gs->player_count;
+                    }
+                }
+
+                gs->cuffs_target = cuff_target;
+
+                char cuffs_msg[64];
+                snprintf(cuffs_msg, 64, "%s cuffed %s!",
+                         gs->players[actor_idx].name,
+                         gs->players[cuff_target].name);
+                game_log(gs, cuffs_msg);
             break;
+        }
 
         case ITEM_MAGNIFYING_GLASS:
             if (gs->current_shell < gs->n_shells) {
-                if (gs->player_turn) {
-                    ShellType current = gs->shells[gs->current_shell];
-                    snprintf(msg, sizeof(msg), "It's a %s.", current == SHELL_LIVE ? "LIVE round" : "BLANK");
+                // Only the host generates the reveal; clients receive it via send_log_to_player
+                if (gs->is_host || gs->player_count <= 1) {
+                    ShellType current_shell_type = gs->shells[gs->current_shell];
+                    snprintf(msg, sizeof(msg), "[PRIVATE] It's a %s.", current_shell_type == SHELL_LIVE ? "LIVE round" : "BLANK");
                     game_log(gs, msg);
-                } else {
-                    game_log(gs, "Dealer inspects the chamber.");
                 }
             }
             break;
+
 
         case ITEM_EXPIRED_MEDICINE:
             if (RangeRand(0, 1)) {
@@ -219,7 +290,13 @@ void use_item(GameState *gs, int item_idx) {
                 game_log(gs, "Medicine worked! +2 charges.");
             } else {
                 current_p->charges--;
-                game_log(gs, "Bad medicine! -1 charge.");
+                game_log(gs, "Medicine was expired... -1 charge.");
+
+                // If the player kills themselves with medicine, pass the turn
+                if (current_p->charges <= 0) {
+                    game_log(gs, "Player eliminated themselves!");
+                    advance_turn(gs);
+                }
             }
             break;
 
@@ -238,83 +315,157 @@ void use_item(GameState *gs, int item_idx) {
 
         case ITEM_BURNER_PHONE:
             if (gs->current_shell < gs->n_shells - 1) {
-                if (gs->player_turn) {
+                if (gs->is_host || gs->player_count <= 1) {
                     int future_idx = RangeRand(gs->current_shell + 1, gs->n_shells - 1);
-                    snprintf(msg, sizeof(msg), "Shell #%d is %s.", future_idx + 1,
+                    int relative_pos = future_idx - gs->current_shell; // 1 = next shell, 2 = two away, etc.
+                    snprintf(msg, sizeof(msg), "[PRIVATE] Shell +%d is %s.", relative_pos,
                              gs->shells[future_idx] == SHELL_LIVE ? "LIVE" : "BLANK");
                     game_log(gs, msg);
-                } else {
-                    game_log(gs, "Dealer listens to the phone.");
                 }
-            } else {
-                game_log(gs, gs->player_turn ? "No future shells to check." : "Dealer hears static.");
             }
             break;
 
-        case ITEM_ADRENALINE: {
-            if (gs->player_turn) {
-                // Check if dealer has anything stealable (excluding adrenaline)
-                int has_stealable = 0;
-                for (int i = 0; i < MAX_ITEMS; i++) {
-                    if (other_p->items[i] != ITEM_NONE &&
-                        other_p->items[i] != ITEM_ADRENALINE) {
-                        has_stealable = 1;
-                        break;
-                    }
-                }
+        case ITEM_ADRENALINE:
+            // Code below is unused, this is part of old logic as far as I remember
 
-                if (!has_stealable) {
-                    game_log(gs, "Nothing stealable! Adrenaline wasted.");
-                } else {
-                    gs->adrenaline_active = 1;
-                    gs->selected_item = 0;
-                    game_log(gs, "ADRENALINE: Select a Dealer item (1-8)");
-                }
-            } else {
-                int stolen_idx = -1;
-                for (int i = 0; i < MAX_ITEMS; i++) {
-                    if (other_p->items[i] != ITEM_NONE &&
-                        other_p->items[i] != ITEM_ADRENALINE) {
-                        stolen_idx = i;
-                        break;
-                    }
-                }
-                if (stolen_idx != -1) {
-                    ItemType stolen = other_p->items[stolen_idx];
-                    for (int i = stolen_idx; i < MAX_ITEMS - 1; i++)
-                        other_p->items[i] = other_p->items[i + 1];
-                    other_p->items[MAX_ITEMS - 1] = ITEM_NONE;
+            /*
+            // --- EXECUTE STEAL PHASE ---
+            if (gs->adrenaline_active) {
+                int target_player = (target_idx >= 0 && target_idx < gs->player_count)
+                                    ? target_idx : other_idx;
+                int steal_slot = item_idx;
 
-                    for (int j = 0; j < MAX_ITEMS; j++) {
-                        if (current_p->items[j] == ITEM_NONE) {
-                            current_p->items[j] = stolen;
-                            break;
+                Player *victim_p = &gs->players[target_player];
+
+                if (steal_slot >= 0 && steal_slot < MAX_ITEMS) {
+                    ItemType stolen_item = victim_p->items[steal_slot];
+
+                    if (stolen_item != ITEM_NONE && stolen_item != ITEM_ADRENALINE) {
+                        for (int i = steal_slot; i < MAX_ITEMS - 1; i++)
+                            victim_p->items[i] = victim_p->items[i + 1];
+                        victim_p->items[MAX_ITEMS - 1] = ITEM_NONE;
+
+                        int found_slot = -1;
+                        for (int i = 0; i < MAX_ITEMS; i++) {
+                            if (current_p->items[i] == ITEM_NONE) {
+                                found_slot = i;
+                                break;
+                            }
                         }
+
+                        if (found_slot != -1) {
+                            current_p->items[found_slot] = stolen_item;
+                            char msg[64];
+                            snprintf(msg, sizeof(msg), "%s stole %s!",
+                                     gs->players[actor_idx].name, item_name(stolen_item));
+                            game_log(gs, msg);
+                        } else {
+                            game_log(gs, "Inventory full!");
+                        }
+                    } else {
+                        game_log(gs, "Nothing stealable there.");
                     }
-
-                    // Tell the player EXACTLY what was stolen
-                    snprintf(msg, sizeof(msg), "Dealer stole your %s!", item_name(stolen));
-                    game_log(gs, msg);
-                } else {
-                    game_log(gs, "Nothing stealable! Adrenaline wasted.");
                 }
-            }
-            break;
-        }
 
+                for (int i = 0; i < MAX_ITEMS; i++) {
+                    if (current_p->items[i] == ITEM_ADRENALINE) {
+                        for (int j = i; j < MAX_ITEMS - 1; j++)
+                            current_p->items[j] = current_p->items[j + 1];
+                        current_p->items[MAX_ITEMS - 1] = ITEM_NONE;
+                        break;
+                    }
+                }
+
+                gs->adrenaline_active = 0;
+                gs->selected_item = 0;
+                return;
+            }*/
+            break;
         default: break;
     }
 
+    // Remove the used item from inventory
     for (int i = item_idx; i < MAX_ITEMS - 1; i++)
         current_p->items[i] = current_p->items[i + 1];
     current_p->items[MAX_ITEMS - 1] = ITEM_NONE;
 
     if (gs->current_shell >= gs->n_shells) {
+        generate_shells(gs);
+        give_new_items(gs);
+        char reload_msg[64];
+        snprintf(reload_msg, sizeof(reload_msg),
+                 "Reloaded: %d live, %d blank.", gs->live_count, gs->blank_count);
+        game_log(gs, reload_msg);
+        gs->show_shells = 1;
+        gs->shell_reveal_time = time(NULL);
+    }
+}
+
+// --- Offline 1v1 Functions ---
+
+void fire_shotgun(GameState *gs, int target_is_dealer, WINDOW *gwin) {
+    // Map 1v1 logic to Array Indices
+    int shooter_idx = gs->player_turn ? 0 : 1;
+    int target_idx  = target_is_dealer ? 1 : 0;
+
+    ShellType current = gs->shells[gs->current_shell];
+    int damage = gs->saw_active ? 2 : 1;
+    int shooter_was_player = (shooter_idx == 0);
+
+    if (shooter_was_player) {
+        if (target_is_dealer) game_log(gs, "You aim at DEALER...");
+        else game_log(gs, "You aim at YOURSELF...");
+    } else {
+        if (target_is_dealer) game_log(gs, "Dealer aims at HIMSELF...");
+        else game_log(gs, "Dealer aims at YOU...");
+    }
+
+    int should_swap_turn = 1;
+
+    if (current == SHELL_LIVE) {
+        game_log(gs, "BANG! It was LIVE.");
+        gs->players[target_idx].charges -= damage;
+        gs->damage_dealt += damage;
+        gs->money += (2000 * damage);
+
+        gs->live_count--;
+        should_swap_turn = 1;
+        if (gwin) trigger_flash(gwin);
+    } else {
+        game_log(gs, "click... It was a BLANK.");
+        gs->blank_count--;
+
+        int shot_self = (shooter_idx == target_idx);
+
+        if (shot_self) {
+            game_log(gs, shooter_was_player ? "Extra turn granted!" : "Dealer keeps his turn!");
+            should_swap_turn = 0;
+        } else {
+            should_swap_turn = 1;
+        }
+    }
+
+    if (should_swap_turn) {
+        if (gs->cuffs_target >= 0) {
+            game_log(gs, "Handcuffs active! Turn skipped.");
+            gs->cuffs_target = -1;
+        } else {
+            gs->player_turn = !gs->player_turn;
+        }
+    }
+
+    gs->current_shell++;
+    gs->saw_active = 0;
+
+    if (gs->players[0].charges <= 0 || gs->players[1].charges <= 0) {
+        game_log(gs, "MATCH OVER.");
+    } else if (gs->current_shell >= gs->n_shells) {
         game_log(gs, "Gun empty. Reloading...");
         generate_shells(gs);
         give_new_items(gs);
 
         gs->player_turn = 1;
+        gs->cuffs_target = -1;
 
         gs->show_shells = 1;
         gs->shell_reveal_time = time(NULL);
@@ -322,17 +473,21 @@ void use_item(GameState *gs, int item_idx) {
 }
 
 void dealer_ai_turn(GameState *gs, WINDOW *gwin) {
+    Player *dealer = &gs->players[1];
+    Player *player = &gs->players[0];
+
     int decided_to_shoot = 0;
     int known_shell = SHELL_UNKNOWN;
 
     game_log(gs, "Dealer is thinking...");
+    if (gwin) { draw_main_ui(gwin, gs); napms(900); }
 
-    while (!decided_to_shoot && gs->dealer.charges > 0 && gs->player.charges > 0) {
+    while (!decided_to_shoot && dealer->charges > 0 && player->charges > 0) {
         int item_to_use = -1;
 
         // Healing
         for (int i = 0; i < MAX_ITEMS; i++) {
-            if (gs->dealer.items[i] == ITEM_CIGARETTE && gs->dealer.charges < gs->dealer.max_charges) {
+            if (dealer->items[i] == ITEM_CIGARETTE && dealer->charges < dealer->max_charges) {
                 item_to_use = i;
                 break;
             }
@@ -341,7 +496,7 @@ void dealer_ai_turn(GameState *gs, WINDOW *gwin) {
         // Knowledge
         if (item_to_use == -1 && known_shell == SHELL_UNKNOWN) {
             for (int i = 0; i < MAX_ITEMS; i++) {
-                if (gs->dealer.items[i] == ITEM_MAGNIFYING_GLASS) {
+                if (dealer->items[i] == ITEM_MAGNIFYING_GLASS) {
                     item_to_use = i;
                     known_shell = gs->shells[gs->current_shell];
                     break;
@@ -353,7 +508,7 @@ void dealer_ai_turn(GameState *gs, WINDOW *gwin) {
         if (item_to_use == -1) {
             if (known_shell == SHELL_LIVE) {
                 for (int i = 0; i < MAX_ITEMS; i++) {
-                    if (gs->dealer.items[i] == ITEM_HANDSAW && !gs->saw_active) {
+                    if (dealer->items[i] == ITEM_HANDSAW && !gs->saw_active) {
                         item_to_use = i;
                         break;
                     }
@@ -362,75 +517,91 @@ void dealer_ai_turn(GameState *gs, WINDOW *gwin) {
         }
 
         if (item_to_use != -1) {
-            use_item(gs, item_to_use);
-            // refresh_dealer_view(gs, gwin);
+            use_item(gs, item_to_use, 1, -1);
+            // Show the player what the dealer just did, then pause
+            if (gwin) { draw_main_ui(gwin, gs); napms(900); }
         } else {
             decided_to_shoot = 1;
         }
     }
 
-    if (gs->dealer.charges > 0 && gs->player.charges > 0) {
+    if (dealer->charges > 0 && player->charges > 0) {
+        if (gwin) { draw_main_ui(gwin, gs); napms(700); }
+
         if (known_shell == SHELL_LIVE) fire_shotgun(gs, 0, gwin); // Shoot player
         else if (known_shell == SHELL_BLANK) fire_shotgun(gs, 1, gwin); // Shoot self
         else {
             if (gs->live_count >= gs->blank_count) fire_shotgun(gs, 0, gwin); // Assume Live
             else fire_shotgun(gs, 1, gwin); // Assume Blank
         }
-        // refresh_dealer_view(gs, gwin);
+
+        if (gwin) { draw_main_ui(gwin, gs); napms(800); }
     }
 }
 
 void init_game(GameState *gs) {
     memset(gs, 0, sizeof(GameState));
+    gs->cuffs_target = -1;
 
     gs->roundAmount = 3;
     int max_charges = RangeRand(2, 4);
     int n_initial_items = RangeRand(2, 4);
 
-    // Initialize Player
-    strncpy(gs->player.name, "You", 31);
-    gs->player.max_charges = max_charges;
-    gs->player.charges = max_charges;
+    // Initialize Player (Index 0)
+    strncpy(gs->players[0].name, "You", 31);
+    gs->players[0].max_charges = max_charges;
+    gs->players[0].charges = max_charges;
 
-    // Initialize Dealer
-    strncpy(gs->dealer.name, "Dealer", 31);
-    gs->dealer.max_charges = max_charges;
-    gs->dealer.charges = max_charges;
+    // Initialize Dealer (Index 1)
+    strncpy(gs->players[1].name, "Dealer", 31);
+    gs->players[1].max_charges = max_charges;
+    gs->players[1].charges = max_charges;
+
+    // Setup indices for offline mode
+    gs->player_count = 2;
+    gs->local_player_index = 0;
+    gs->current_player_index = 0;
+    gs->is_host = 1;
+    gs->visual_map[POS_BOTTOM] = 0;
+    gs->visual_map[POS_TOP] = 1;
 
     generate_shells(gs);
     give_new_items(gs);
 
-    // Set starting state
     gs->round = 1;
     gs->player_turn = 1;
     gs->show_shells = 1;
     gs->shell_reveal_time = time(NULL);
 
-    // Log the start
     char msg[64];
     snprintf(msg, sizeof(msg), "Round 1: %d Charges, %d Shells.", max_charges, gs->n_shells);
     game_log(gs, "Welcome to the table.");
     game_log(gs, msg);
 }
 
+
 void start_next_round(GameState *gs) {
     int max_charges = RangeRand(2, 4);
-    gs->player.max_charges = max_charges;
-    gs->dealer.max_charges = max_charges;
-    gs->player.charges     = max_charges;
-    gs->dealer.charges     = max_charges;
 
-    for (int i = 0; i < MAX_ITEMS; i++) {
-        gs->player.items[i] = ITEM_NONE;
-        gs->dealer.items[i] = ITEM_NONE;
+    for (int p = 0; p < gs->player_count; p++) {
+        Player *current_p = &gs->players[p];
+
+        current_p->max_charges = max_charges;
+        current_p->charges = max_charges;
+
+        for (int i = 0; i < MAX_ITEMS; i++) {
+            current_p->items[i] = ITEM_NONE;
+        }
     }
 
     // Reset game state flags
     gs->saw_active        = 0;
-    gs->cuffs_active      = 0;
+    gs->cuffs_target      = -1;
     gs->adrenaline_active = 0;
     gs->player_turn       = 1;
     gs->selected_action   = 0;
+    gs->selected_item     = 0;
+    gs->current_player_index = 0;
 
     generate_shells(gs);
     give_new_items(gs);

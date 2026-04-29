@@ -12,6 +12,7 @@ void draw_items(WINDOW *win, int row, int col, ItemType items[], int selected_ac
 void draw_charges(WINDOW *win, int row, int col, int charges, int max_charges);
 const char *item_name(ItemType item);
 void trigger_flash(WINDOW *gwin);
-void init_colors(void); // Moved here since main calls it but it's UI setup
+void init_colors(void);
+void draw_main_ui(WINDOW *gwin, GameState *gs);
 
 #endif
