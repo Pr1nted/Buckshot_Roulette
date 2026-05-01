@@ -19,16 +19,13 @@ int RangeRand(int min, int max) {
 }
 
 void game_log(GameState *gs, const char *msg) {
+    if (gs->suppress_log) return;
     if (!gs->is_host && strncmp(msg, "[PRIVATE] ", 10) == 0) msg += 10;
 
-    if (gs->n_log < MAX_LOG) {
-        strncpy(gs->log[gs->n_log++], msg, 63);
-    } else {
-        // Scroll log up
-        for (int i = 0; i < MAX_LOG - 1; i++)
-            strncpy(gs->log[i], gs->log[i + 1], 63);
-        strncpy(gs->log[MAX_LOG - 1], msg, 63);
-    }
+    int idx = gs->n_log % MAX_LOG;
+    strncpy(gs->log[idx], msg, 63);
+    gs->log[idx][63] = '\0';
+    gs->n_log++;
 }
 
 void generate_shells(GameState *gs) {
@@ -498,6 +495,8 @@ void dealer_ai_turn(GameState *gs, WINDOW *gwin) {
             for (int i = 0; i < MAX_ITEMS; i++) {
                 if (dealer->items[i] == ITEM_MAGNIFYING_GLASS) {
                     item_to_use = i;
+                    // Read shell directly — don't call use_item which would log
+                    // "[PRIVATE] It's a..." and reveal the shell to the player.
                     known_shell = gs->shells[gs->current_shell];
                     break;
                 }
@@ -517,8 +516,16 @@ void dealer_ai_turn(GameState *gs, WINDOW *gwin) {
         }
 
         if (item_to_use != -1) {
-            use_item(gs, item_to_use, 1, -1);
-            // Show the player what the dealer just did, then pause
+            // Magnifying glass is consumed silently — use_item would log the
+            // private shell reveal and show it to the player.
+            if (dealer->items[item_to_use] == ITEM_MAGNIFYING_GLASS) {
+                game_log(gs, "Dealer uses Mag.Glass.");
+                for (int i = item_to_use; i < MAX_ITEMS - 1; i++)
+                    dealer->items[i] = dealer->items[i + 1];
+                dealer->items[MAX_ITEMS - 1] = ITEM_NONE;
+            } else {
+                use_item(gs, item_to_use, 1, -1);
+            }
             if (gwin) { draw_main_ui(gwin, gs); napms(900); }
         } else {
             decided_to_shoot = 1;

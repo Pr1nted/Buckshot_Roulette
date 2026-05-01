@@ -59,12 +59,10 @@ void show_host_console(WINDOW *gwin, GameState *gs) {
         werase(win);
         box(win, 0, 0);
 
-        // Title
         wattron(win, A_BOLD | COLOR_PAIR(4));
         mvwprintw(win, 1, 2, "HOST ADMIN CONSOLE");
         wattroff(win, A_BOLD | COLOR_PAIR(4));
 
-        // Shell Order
         mvwprintw(win, 3, 2, "Shell Sequence (L=Live, B=Blank):");
         int print_x = 2;
         for (int i = 0; i < gs->n_shells; i++) {
@@ -83,10 +81,8 @@ void show_host_console(WINDOW *gwin, GameState *gs) {
             print_x += 2;
         }
 
-        // Separator
         mvwhline(win, 6, 1, ACS_HLINE, w - 2);
 
-        // Log History
         mvwprintw(win, 7, 2, "Game Log History:");
         int log_row = 9;
         int max_visible_logs = h - 12;
@@ -97,7 +93,7 @@ void show_host_console(WINDOW *gwin, GameState *gs) {
         }
 
         for (int i = start_log_idx; i < gs->n_log; i++) {
-            mvwprintw(win, log_row++, 2, "%s", gs->log[i]);
+            mvwprintw(win, log_row++, 2, "%s", gs->log[i % MAX_LOG]);
         }
 
         mvwprintw(win, h - 2, w/2 - 10, "Press any key to close");
@@ -106,7 +102,6 @@ void show_host_console(WINDOW *gwin, GameState *gs) {
         int ch = wgetch(win);
         if (ch != ERR) {
             delwin(win);
-            // Restore the main window focus
             touchwin(gwin);
             wrefresh(gwin);
             return;
@@ -1295,7 +1290,7 @@ void apply_action(GameState *gs, ActionPacket *ap, WINDOW *gwin) {
     if (ap->action_type == 0) {
         perform_multiplayer_shoot(gs, ap->actor_idx, ap->target_idx, gwin);
 
-        if (gs->current_shell >= gs->n_shells) {
+        if (gs->is_host && gs->current_shell >= gs->n_shells) {
             generate_shells(gs);
             give_new_items(gs);
             char reload_msg[64];
@@ -1351,6 +1346,10 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
     struct timeval tv;
     int max_sd;
 
+    // Client: remembers a header byte if recv_body returned EAGAIN (-2),
+    // so we don't lose it and misinterpret the next body byte as a header.
+    int pending_header = -1;
+
     while (1) {
         draw_main_ui(gwin, gs);
 
@@ -1365,7 +1364,6 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
         if (alive_count <= 1) {
             napms(2000);
 
-            // Identify the winner
             int winner_idx = -1;
             for(int i = 0; i < gs->player_count; i++) {
                 if(gs->players[i].charges > 0) {
@@ -1375,7 +1373,6 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
             }
 
             if (gs->round >= gs->roundAmount) {
-                // Prepare the victory message
                 char winner_msg[64];
                 if (winner_idx != -1) {
                     snprintf(winner_msg, 64, "MATCH OVER: %s is the Victor!", gs->players[winner_idx].name);
@@ -1398,9 +1395,8 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                 napms(3000);
 
                 delwin(gwin);
-                return; // Return to the lobby loop
+                return;
             } else {
-                // Normal round transition logic...
                 if (net_ctx->is_host) {
                     start_next_round(gs);
                     send_sync(net_ctx, gs);
@@ -1430,7 +1426,7 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
         }
 
         tv.tv_sec = 0;
-        tv.tv_usec = 100000; // 100ms timeout
+        tv.tv_usec = 100000;
 
         int activity = 0;
         if (max_sd > 0) {
@@ -1456,12 +1452,13 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
 
                                 pthread_mutex_unlock(&net_ctx->mutex);
                                 for (int l = log_before; l < gs->n_log; l++) {
-                                    if (strncmp(gs->log[l], "[PRIVATE] ", 10) == 0) {
-                                        const char *reveal = gs->log[l] + 10;
-                                        memmove(gs->log[l], reveal, strlen(reveal) + 1);
-                                        send_log_to_player(net_ctx, ap.actor_idx, gs->log[l]);
+                                    int idx = l % MAX_LOG;
+                                    if (strncmp(gs->log[idx], "[PRIVATE] ", 10) == 0) {
+                                        const char *reveal = gs->log[idx] + 10;
+                                        memmove(gs->log[idx], reveal, strlen(reveal) + 1);
+                                        send_log_to_player(net_ctx, ap.actor_idx, gs->log[idx]);
                                     } else {
-                                        broadcast_log(net_ctx, gs->log[l]);
+                                        broadcast_log(net_ctx, gs->log[idx]);
                                     }
                                 }
 
@@ -1486,29 +1483,41 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
             else {
                 if (FD_ISSET(net_ctx->sock, &readfds)) {
                     char header;
-                    int r = recv(net_ctx->sock, &header, 1, 0);
 
-                    if (r == 0) {
-                        // Connection closed gracefully
-                        CLOSE_SOCKET(net_ctx->sock);
-                        net_ctx->sock = INVALID_SOCK;
-                        net_ctx->is_connected = false;
-                        break;
-                    }
+                    // Use the saved header from a previous EAGAIN, or read a new one
+                    if (pending_header >= 0) {
+                        header = (char)pending_header;
+                        pending_header = -1;
+                    } else {
+                        int r = recv(net_ctx->sock, &header, 1, 0);
 
-                    if (r < 0) {
-                        int err = GET_SOCKET_ERROR();
-                        if (err == EAGAIN || err == EWOULDBLOCK) continue;
+                        if (r == 0) {
+                            CLOSE_SOCKET(net_ctx->sock);
+                            net_ctx->sock = INVALID_SOCK;
+                            net_ctx->is_connected = false;
+                            break;
+                        }
 
-                        CLOSE_SOCKET(net_ctx->sock);
-                        net_ctx->sock = INVALID_SOCK;
-                        net_ctx->is_connected = false;
-                        break;
+                        if (r < 0) {
+                            int err = GET_SOCKET_ERROR();
+                            if (err == EAGAIN || err == EWOULDBLOCK) continue;
+
+                            CLOSE_SOCKET(net_ctx->sock);
+                            net_ctx->sock = INVALID_SOCK;
+                            net_ctx->is_connected = false;
+                            break;
+                        }
                     }
 
                     if (header == PKT_SYNC) {
                         SyncPacket sp;
-                        if (recv_body(net_ctx->sock, &sp, sizeof(sp)) != 0) {
+                        int body_res = recv_body(net_ctx->sock, &sp, sizeof(sp));
+                        if (body_res == -2) {
+                            // Body not fully available yet — save header and retry
+                            pending_header = header;
+                            continue;
+                        }
+                        if (body_res != 0) {
                             game_log(gs, "Disconnected (Sync).");
                             goto done;
                         }
@@ -1516,7 +1525,12 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                     }
                     else if (header == PKT_LOG) {
                         LogPacket lp;
-                        if (recv_body(net_ctx->sock, &lp, sizeof(lp)) != 0) {
+                        int body_res = recv_body(net_ctx->sock, &lp, sizeof(lp));
+                        if (body_res == -2) {
+                            pending_header = header;
+                            continue;
+                        }
+                        if (body_res != 0) {
                             game_log(gs, "Disconnected (Log).");
                             goto done;
                         }
@@ -1524,11 +1538,18 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                     }
                     else if (header == PKT_ACTION) {
                         ActionPacket ap;
-                        if (recv_body(net_ctx->sock, &ap, sizeof(ap)) != 0) {
+                        int body_res = recv_body(net_ctx->sock, &ap, sizeof(ap));
+                        if (body_res == -2) {
+                            pending_header = header;
+                            continue;
+                        }
+                        if (body_res != 0) {
                             game_log(gs, "Disconnected (Action).");
                             goto done;
                         }
+                        gs->suppress_log = 1;
                         apply_action(gs, &ap, gwin);
+                        gs->suppress_log = 0;
                     }
                 }
             }
@@ -1643,11 +1664,12 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                                 int log_before = gs->n_log;
                                 apply_action(gs, &ap, gwin);
                                 for (int l = log_before; l < gs->n_log; l++) {
-                                    if (strncmp(gs->log[l], "[PRIVATE] ", 10) == 0) {
-                                        memmove(gs->log[l], gs->log[l] + 10, strlen(gs->log[l] + 10) + 1);
-                                        send_log_to_player(net_ctx, ap.actor_idx, gs->log[l]);
+                                    int idx = l % MAX_LOG;
+                                    if (strncmp(gs->log[idx], "[PRIVATE] ", 10) == 0) {
+                                        memmove(gs->log[idx], gs->log[idx] + 10, strlen(gs->log[idx] + 10) + 1);
+                                        send_log_to_player(net_ctx, ap.actor_idx, gs->log[idx]);
                                     } else {
-                                        broadcast_log(net_ctx, gs->log[l]);
+                                        broadcast_log(net_ctx, gs->log[idx]);
                                     }
                                 }
                                 broadcast_action(net_ctx, &ap);
@@ -1683,11 +1705,12 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                                 int log_before = gs->n_log;
                                 apply_action(gs, &ap, gwin);
                                 for (int l = log_before; l < gs->n_log; l++) {
-                                    if (strncmp(gs->log[l], "[PRIVATE] ", 10) == 0) {
-                                        memmove(gs->log[l], gs->log[l] + 10, strlen(gs->log[l] + 10) + 1);
-                                        send_log_to_player(net_ctx, ap.actor_idx, gs->log[l]);
+                                    int idx = l % MAX_LOG;
+                                    if (strncmp(gs->log[idx], "[PRIVATE] ", 10) == 0) {
+                                        memmove(gs->log[idx], gs->log[idx] + 10, strlen(gs->log[idx] + 10) + 1);
+                                        send_log_to_player(net_ctx, ap.actor_idx, gs->log[idx]);
                                     } else {
-                                        broadcast_log(net_ctx, gs->log[l]);
+                                        broadcast_log(net_ctx, gs->log[idx]);
                                     }
                                 }
                                 broadcast_action(net_ctx, &ap);
@@ -1747,11 +1770,12 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                             int log_before = gs->n_log;
                             apply_action(gs, &ap, gwin);
                             for (int l = log_before; l < gs->n_log; l++) {
-                                if (strncmp(gs->log[l], "[PRIVATE] ", 10) == 0) {
-                                    memmove(gs->log[l], gs->log[l] + 10, strlen(gs->log[l] + 10) + 1);
-                                    send_log_to_player(net_ctx, ap.actor_idx, gs->log[l]);
+                                int idx = l % MAX_LOG;
+                                if (strncmp(gs->log[idx], "[PRIVATE] ", 10) == 0) {
+                                    memmove(gs->log[idx], gs->log[idx] + 10, strlen(gs->log[idx] + 10) + 1);
+                                    send_log_to_player(net_ctx, ap.actor_idx, gs->log[idx]);
                                 } else {
-                                    broadcast_log(net_ctx, gs->log[l]);
+                                    broadcast_log(net_ctx, gs->log[idx]);
                                 }
                             }
                             broadcast_action(net_ctx, &ap);
@@ -1766,7 +1790,6 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                             ItemType item = p->items[gs->selected_item];
 
                             if (item == ITEM_ADRENALINE) {
-                                // Check there's something to steal first
                                 int has_stealable = 0;
                                 for (int i = 0; i < gs->player_count; i++) {
                                     if (i == gs->local_player_index) continue;
@@ -1782,7 +1805,6 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                                 if (!has_stealable) {
                                     game_log(gs, "Nothing to steal!");
                                 } else {
-                                    // Enter selection mode. Actual use_item fires in ADRENALINE CONFIRM.
                                     gs->adrenaline_active = 1;
                                     gs->steal_target_idx = -1;
                                     for (int i = 0; i < gs->player_count; i++) {
@@ -1794,8 +1816,6 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                                     game_log(gs, "ADRENALINE: Select target (Up/Down, Enter)");
                                 }
                             } else if (item == ITEM_HANDCUFFS) {
-                                // Enter target-selection mode. The actual item use and
-                                // network packet are sent in the HANDCUFFS CONFIRM block.
                                 gs->handcuffs_selecting = 1;
                                 gs->steal_target_idx = -1;
                                 for (int i = 0; i < gs->player_count; i++) {
@@ -1822,11 +1842,12 @@ void render_multiplayer_game(GameState *gs, NetworkContext *net_ctx) {
                                     int log_before = gs->n_log;
                                     apply_action(gs, &ap, gwin);
                                     for (int l = log_before; l < gs->n_log; l++) {
-                                        if (strncmp(gs->log[l], "[PRIVATE] ", 10) == 0) {
-                                            memmove(gs->log[l], gs->log[l] + 10, strlen(gs->log[l] + 10) + 1);
-                                            send_log_to_player(net_ctx, ap.actor_idx, gs->log[l]);
+                                        int idx = l % MAX_LOG;
+                                        if (strncmp(gs->log[idx], "[PRIVATE] ", 10) == 0) {
+                                            memmove(gs->log[idx], gs->log[idx] + 10, strlen(gs->log[idx] + 10) + 1);
+                                            send_log_to_player(net_ctx, ap.actor_idx, gs->log[idx]);
                                         } else {
-                                            broadcast_log(net_ctx, gs->log[l]);
+                                            broadcast_log(net_ctx, gs->log[idx]);
                                         }
                                     }
                                     broadcast_action(net_ctx, &ap);
@@ -1864,7 +1885,6 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
     while (1) {
         werase(gwin);
 
-        // --- DRAW INTERFACE ---
         wattron(gwin, A_BOLD | COLOR_PAIR(4));
         mvwprintw(gwin, 1, 2, "HOST ADMIN CONSOLE");
         wattroff(gwin, A_BOLD | COLOR_PAIR(4));
@@ -1914,7 +1934,7 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
         }
 
         for (int i = start_log_idx; i < gs->n_log; i++) {
-            mvwprintw(gwin, log_row++, 2, "%s", gs->log[i]);
+            mvwprintw(gwin, log_row++, 2, "%s", gs->log[i % MAX_LOG]);
         }
 
         box(gwin, 0, 0);
@@ -1966,7 +1986,6 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
                 int probe = select((int)sd + 1, &probe_fds, NULL, NULL, &probe_tv);
 #endif
                 if (probe < 0) {
-                    // select() itself failed - socket is broken
                     int err = GET_SOCKET_ERROR();
                     if (g_debug_mode) {
                         char dbuf[64];
@@ -2047,7 +2066,6 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
         tv.tv_sec = 1;
         tv.tv_usec = 0;
 
-        // --- SELECT LOOP ---
         int activity = 0;
         if (max_sd > 0) {
             activity = select(max_sd + 1, &readfds, NULL, &exceptfds, &tv);
@@ -2058,7 +2076,6 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
             continue;
         }
 
-        // --- PROCESS INPUT ---
         int ch = wgetch(gwin);
         if (ch != ERR) {
             if (ch == 'q') {
@@ -2067,7 +2084,7 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
             }
         }
 
-        // --- PROCESS EXCEPTIONS (Socket Errors/OOB) ---
+        // --- PROCESS EXCEPTIONS ---
         if (activity > 0) {
             pthread_mutex_lock(&net_ctx->mutex);
             for (int i = 0; i < net_ctx->client_sockets_count; i++) {
@@ -2088,7 +2105,6 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
                         strncpy(net_ctx->player_names[j+1], net_ctx->player_names[j+2], 32);
                      }
                      net_ctx->client_sockets_count--;
-                     // Don't increment 'i'
                 } else {
                     i++;
                 }
@@ -2096,7 +2112,7 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
             pthread_mutex_unlock(&net_ctx->mutex);
         }
 
-        // --- PROCESS DATA (Incoming Packets) ---
+        // --- PROCESS DATA ---
         if (activity > 0) {
             pthread_mutex_lock(&net_ctx->mutex);
             for (int i = 0; i < net_ctx->client_sockets_count; i++) {
@@ -2105,14 +2121,12 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
                 if (sd == INVALID_SOCK) continue;
                 if (FD_ISSET(sd, &readfds)) {
 
-                    // DEBUG
                     if (g_debug_mode) {
                         char dbuf[64];
                         snprintf(dbuf, 64, "[HOST] DATA on Socket %d", (int)sd);
                         game_log(gs, dbuf);
                     }
 
-                    // CRITICAL: UNLOCK MUTEX before recv
                     pthread_mutex_unlock(&net_ctx->mutex);
 
                     char header;
@@ -2120,20 +2134,19 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
                     int res = recv_packet(sd, &header, &ap, sizeof(ap), gs);
 
                     if (res == 0) {
-                        // --- PACKET RECEIVED SUCCESSFULLY ---
                         if (header == PKT_ACTION) {
+                            int log_before = gs->n_log;
                             apply_action(gs, &ap, gwin);
 
-                            if (gs->current_shell >= gs->n_shells) {
-                                game_log(gs, "Gun empty. Reloading...");
-                                generate_shells(gs);
-                                give_new_items(gs);
-                                gs->show_shells = 1;
-                                gs->shell_reveal_time = time(NULL);
-                            }
-
-                            if (gs->n_log > 0) {
-                                broadcast_log(net_ctx, gs->log[gs->n_log - 1]);
+                            for (int l = log_before; l < gs->n_log; l++) {
+                                int idx = l % MAX_LOG;
+                                if (strncmp(gs->log[idx], "[PRIVATE] ", 10) == 0) {
+                                    const char *reveal = gs->log[idx] + 10;
+                                    memmove(gs->log[idx], reveal, strlen(reveal) + 1);
+                                    send_log_to_player(net_ctx, ap.actor_idx, gs->log[idx]);
+                                } else {
+                                    broadcast_log(net_ctx, gs->log[idx]);
+                                }
                             }
 
                             broadcast_action(net_ctx, &ap);
@@ -2144,10 +2157,8 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
                             game_log(gs, "[HOST] Unknown packet.");
                         }
                     } else if (res == -2) {
-                        // Just continue to next select loop.
+                        // EAGAIN — not all data available yet, retry next loop
                     } else {
-                        // --- PACKET RECV FAILED (Error or Disconnect) ---
-                        // res == -1
                         pthread_mutex_lock(&net_ctx->mutex);
                         if (g_debug_mode) {
                             char dbuf[64];
@@ -2159,7 +2170,6 @@ void render_host_admin_console(GameState *gs, NetworkContext *net_ctx) {
 
                         CLOSE_SOCKET(sd);
 
-                        // Shift array
                         for (int j = i; j < net_ctx->client_sockets_count - 1; j++) {
                             net_ctx->clients[j] = net_ctx->clients[j+1];
                             net_ctx->player_names[j+1][0] = '\0';
@@ -2558,15 +2568,15 @@ void draw_main_ui(WINDOW *gwin, GameState *gs) {
     mvwprintw(log_win, 0, 2, " LOG ");
     int log_start = (gs->n_log > log_h - 2) ? gs->n_log - (log_h - 2) : 0;
     for (int i = log_start; i < gs->n_log; i++)
-        mvwprintw(log_win, i - log_start + 1, 1, "%-28s", gs->log[i]);
+        mvwprintw(log_win, i - log_start + 1, 1, "%-28s", gs->log[i % MAX_LOG]);
     wrefresh(log_win);
     delwin(log_win);
 
     struct { int y; int x; } coords[4] = {
-        { LINES - 5, mid_x },     // Bottom (Local)
-        { mid_y,      COLS - 20 }, // Right
-        { 2,          mid_x },     // Top
-        { mid_y,      5 }          // Left
+        { LINES - 5, mid_x },
+        { mid_y,      COLS - 20 },
+        { 2,          mid_x },
+        { mid_y,      5 }
     };
 
     int my_global_pos = -1;
@@ -2624,7 +2634,6 @@ void draw_main_ui(WINDOW *gwin, GameState *gs) {
 
         draw_charges(gwin, cy + 1, cx, p->charges, p->max_charges);
 
-        // --- ITEM DRAWING ---
         int selection_to_use = -1;
         if (gs->adrenaline_active && is_me) {
             for(int k=0; k<MAX_ITEMS; k++) {
@@ -2699,7 +2708,6 @@ void draw_main_ui(WINDOW *gwin, GameState *gs) {
         }
     }
 
-    // --- ACTIONS BOX DRAWING ---
     int act_h = 12;
     int act_w = 30;
     WINDOW *act_win = derwin(gwin, act_h, act_w, act_anchor_y, act_anchor_x);
@@ -2737,7 +2745,6 @@ void draw_main_ui(WINDOW *gwin, GameState *gs) {
             mvwprintw(act_win, row + 1, 1, "1-8/Up/Down, Enter");
             mvwprintw(act_win, row + 2, 1, "ESC to Cancel");
         } else if (gs->adrenaline_active || gs->handcuffs_selecting) {
-            // SELECTION MODE (Adrenaline or Handcuffs)
             if (gs->handcuffs_selecting) {
                 mvwprintw(act_win, 1, 1, "Cuff Player:");
             } else {
@@ -2753,7 +2760,6 @@ void draw_main_ui(WINDOW *gwin, GameState *gs) {
                 char name[20];
                 snprintf(name, 20, "[P%d] %s", i, gs->players[i].name);
 
-                // For adrenaline, check if this opponent has anything stealable
                 int has_stealable = 1;
                 if (gs->adrenaline_active) {
                     has_stealable = 0;
@@ -2790,7 +2796,6 @@ void draw_main_ui(WINDOW *gwin, GameState *gs) {
                     char display_name[12];
                     snprintf(display_name, sizeof(display_name), "%.10s", gs->players[i].name);
 
-                    // --- Dim out the selection if the target player is dead ---
                     if (gs->players[i].charges <= 0) {
                         wattron(act_win, A_DIM);
                         mvwprintw(act_win, menu_y, 1, " Shoot %-10s (DEAD) ", display_name);

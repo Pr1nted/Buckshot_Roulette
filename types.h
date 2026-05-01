@@ -117,6 +117,7 @@ typedef struct {
     // Networking
     int awaiting_sync;
     int is_host;
+    int suppress_log;   // When 1, game_log() is a no-op (used on clients replaying PKT_ACTION)
 
     int round_wins[MAX_PLAYERS];
 

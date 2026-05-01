@@ -722,7 +722,13 @@ void send_sync(NetworkContext *ctx, GameState *gs) {
 
         memcpy(sp.players, gs->players, sizeof(gs->players));
         memcpy(sp.visual_map, gs->visual_map, sizeof(gs->visual_map));
-        memcpy(sp.shells, gs->shells, sizeof(gs->shells));
+
+        // Mask every shell as UNKNOWN — clients must not know the actual sequence.
+        // Private shell reveals (Magnifying Glass, Burner Phone) are sent via
+        // targeted PKT_LOG messages, not through the sync packet.
+        for (int i = 0; i < MAX_SHELLS; i++) {
+            sp.shells[i] = SHELL_UNKNOWN;
+        }
 
         char buf[sizeof(sp) + 1];
         buf[0] = PKT_SYNC;
@@ -769,24 +775,39 @@ void broadcast_log(NetworkContext *ctx, const char *msg) {
 
 // --- Send a log message to one specific player ---
 void send_log_to_player(NetworkContext *ctx, int player_idx, const char *msg) {
-    if (player_idx == 0) return;
+        // If the target is the host (player 0) and host is playing, do nothing –
+        // the host sees the log locally.
+        if (ctx->is_host_playing && player_idx == 0) {
+            return;
+        }
 
-    int client_slot = player_idx - 1;
+        int client_slot;
+        if (ctx->is_host_playing) {
+            // player 1 → slot 0, player 2 → slot 1, …
+            client_slot = player_idx - 1;
+        } else {
+            // player 0 → slot 0, player 1 → slot 1, …
+            client_slot = player_idx;
+        }
 
-    LogPacket lp;
-    strncpy(lp.msg, msg, 63);
-    lp.msg[63] = '\0';
+        if (client_slot < 0 || client_slot >= ctx->client_sockets_count) {
+            return; // invalid or disconnected player
+        }
 
-    char buf[sizeof(lp) + 1];
-    buf[0] = PKT_LOG;
-    memcpy(buf + 1, &lp, sizeof(lp));
+        LogPacket lp;
+        strncpy(lp.msg, msg, 63);
+        lp.msg[63] = '\0';
 
-    pthread_mutex_lock(&ctx->mutex);
-    if (client_slot >= 0 && client_slot < ctx->client_sockets_count) {
-        send_all(ctx->clients[client_slot], buf, sizeof(buf));
+        char buf[sizeof(lp) + 1];
+        buf[0] = PKT_LOG;
+        memcpy(buf + 1, &lp, sizeof(lp));
+
+        pthread_mutex_lock(&ctx->mutex);
+        if (client_slot < ctx->client_sockets_count) {
+            send_all(ctx->clients[client_slot], buf, sizeof(buf));
+        }
+        pthread_mutex_unlock(&ctx->mutex);
     }
-    pthread_mutex_unlock(&ctx->mutex);
-}
 
 // --- send_action_to_host ---
 void send_action_to_host(NetworkContext *ctx, GameState *gs, ActionPacket *ap) {
