@@ -3,8 +3,15 @@ project(Buckshot_roulette C)
 
 set(CMAKE_C_STANDARD 11)
 
-find_package(Curses REQUIRED)
-include_directories(${CURSES_INCLUDE_DIR})
+if(DEFINED NCURSES_PREFIX)
+    # Use the explicitly provided prefix (passed from autocompile.sh)
+    set(CURSES_INCLUDE_DIR "${NCURSES_PREFIX}/include")
+    set(CURSES_LIBRARIES   "${NCURSES_PREFIX}/lib/libncurses.a")
+    include_directories(${CURSES_INCLUDE_DIR})
+else()
+    find_package(Curses REQUIRED)
+    include_directories(${CURSES_INCLUDE_DIR})
+endif()
 
 find_package(Threads REQUIRED)
 
